@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Visual Learner",
+    "slug": "visual-learner",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "visuallearner",
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      "expo-image-picker",
+      "expo-asset",
+      "expo-sqlite"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "permissions": [
+        "CAMERA"
+      ]
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

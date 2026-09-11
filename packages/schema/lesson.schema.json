@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visual-learner.local/lesson.schema.json",
+  "title": "Lesson",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "contentType",
+    "summary",
+    "intuition",
+    "steps",
+    "technicalDetails",
+    "workedExample",
+    "visual",
+    "commonMistakes",
+    "questions",
+    "confidence",
+    "evidence"
+  ],
+  "properties": {
+    "title": { "type": "string", "minLength": 1 },
+    "contentType": {
+      "type": "string",
+      "enum": ["equation", "diagram", "text", "graph", "mixed"]
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "intuition": { "type": "string", "minLength": 1 },
+    "steps": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "technicalDetails": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "workedExample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "solution"],
+      "properties": {
+        "prompt": { "type": "string" },
+        "solution": { "type": "string" }
+      }
+    },
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "title", "nodes"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["equation_breakdown", "flowchart", "graph", "concept_map"]
+        },
+        "title": { "type": "string" },
+        "caption": { "type": "string" },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "detail": { "type": "string" }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "x": { "type": "number", "minimum": 0, "maximum": 1 },
+              "y": { "type": "number", "minimum": 0, "maximum": 1 },
+              "w": { "type": "number", "minimum": 0, "maximum": 1 },
+              "h": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "commonMistakes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "questions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/practiceQuestion" }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "practiceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "conceptName",
+        "kind",
+        "prompt",
+        "choices",
+        "correctIndex",
+        "hint",
+        "explanation",
+        "difficulty"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "conceptName": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["conceptual", "application", "calculation", "misconception"]
+        },
+        "prompt": { "type": "string" },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "string" }
+        },
+        "correctIndex": { "type": "integer", "minimum": 0 },
+        "hint": { "type": "string" },
+        "explanation": { "type": "string" },
+        "difficulty": {
+          "type": "string",
+          "enum": ["easy", "medium", "hard"]
+        }
+      }
+    }
+  }
+}

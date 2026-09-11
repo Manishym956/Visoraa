@@ -1,0 +1,58 @@
+[
+  {
+    "id": "eq-standard",
+    "filename": "page-equation.png",
+    "expectedContentType": "equation",
+    "minConfidence": 0.5,
+    "minQuestions": 3,
+    "notes": "Clear printed derivative"
+  },
+  {
+    "id": "diagram-flow",
+    "filename": "diagram-flow.png",
+    "expectedContentType": "diagram",
+    "minConfidence": 0.5,
+    "minQuestions": 3,
+    "notes": "Three-box flowchart"
+  },
+  {
+    "id": "graph-plot",
+    "filename": "plot-graph.png",
+    "expectedContentType": "graph",
+    "minConfidence": 0.5,
+    "minQuestions": 3,
+    "notes": "Linear plot"
+  },
+  {
+    "id": "text-paragraph",
+    "filename": "notes-text.png",
+    "expectedContentType": "text",
+    "minConfidence": 0.5,
+    "minQuestions": 3,
+    "notes": "Textbook paragraph"
+  },
+  {
+    "id": "handwriting-named",
+    "filename": "handwriting-notes-text.png",
+    "expectedContentType": "text",
+    "minConfidence": 0.4,
+    "minQuestions": 3,
+    "notes": "Handwritten notes (filename cue)"
+  },
+  {
+    "id": "low-quality-equation",
+    "filename": "blurry-low-quality-equation.png",
+    "expectedContentType": "equation",
+    "minConfidence": 0.4,
+    "minQuestions": 3,
+    "notes": "Low-quality image named as equation"
+  },
+  {
+    "id": "mixed",
+    "filename": "mix-both.png",
+    "expectedContentType": "mixed",
+    "minConfidence": 0.4,
+    "minQuestions": 3,
+    "notes": "Mixed artifact"
+  }
+]

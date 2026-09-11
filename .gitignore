@@ -1,0 +1,24 @@
+.env
+.env.*
+!.env.example
+!**/.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+dist/
+.expo/
+web-build/
+*.db
+apps/api/data/
+.DS_Store
+coverage/
+.idea/
+.vscode/
+
+# Local Cursor rules and original spec pack (keep out of GitHub)
+.cursor/rules/
+visual_learner_ai_pack/
+.cursor
