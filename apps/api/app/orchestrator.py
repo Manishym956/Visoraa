@@ -7,7 +7,8 @@ from app.image_validation import validate_image
 from app.models import Depth, Lesson
 from app.providers.base import LessonProvider
 
-MAX_RETRIES = 2
+# One retry: each attempt spends rate-limited LLM quota.
+MAX_RETRIES = 1
 
 
 class LearningOrchestrator:

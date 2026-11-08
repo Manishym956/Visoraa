@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -97,6 +97,8 @@ class Lesson(BaseModel):
     questions: list[PracticeQuestion]
     confidence: float = Field(ge=0, le=1)
     evidence: list[str]
+    # Raw features read from the image by the extract step (pipeline provider only).
+    sourceExtraction: dict[str, Any] | None = None
 
 
 class LessonCreateResponse(BaseModel):

@@ -22,3 +22,9 @@ coverage/
 .cursor/rules/
 visual_learner_ai_pack/
 .cursor
+.env
+
+# graphify knowledge-graph output
+graphify-out/
+.agents
+.claude

@@ -1,10 +1,15 @@
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
+  BackHandler,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
+  SafeAreaView,
+  StatusBar as RNStatusBar,
   ScrollView,
   StyleSheet,
   Switch,
@@ -13,6 +18,7 @@ import {
   View,
 } from "react-native";
 import {
+  API_URL,
   askQuestion,
   createLesson,
   fetchPractice,
@@ -22,12 +28,12 @@ import {
   setProviderOverride,
 } from "./src/api";
 import type {
+  ContentType,
   Depth,
   Lesson,
   PracticeQuestion,
   ProgressConcept,
   ReviewConcept,
-  TutorResponse,
 } from "./src/lessonView";
 import { isLowConfidence, layersForDepth } from "./src/lessonView";
 import {
@@ -35,840 +41,1173 @@ import {
   getLocalLessons,
   saveLocalLesson,
   upsertLocalConcept,
+  type LocalConcept,
   type LocalLesson,
 } from "./src/localStore";
-import { colors } from "./src/theme";
+import { colors, icon, radius, shadow, space } from "./src/theme";
+import {
+  Badge,
+  Body,
+  Bullets,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  IconButton,
+  MasteryRow,
+  ProgressBar,
+  SectionCard,
+  Segmented,
+  styles as ui,
+  type IconName,
+} from "./src/ui";
 import { VisualSpecView } from "./src/VisualSpecView";
 
-type Screen =
-  | "capture"
-  | "lesson"
-  | "tutor"
-  | "practice"
-  | "progress"
-  | "review"
-  | "history"
-  | "settings";
+type Tab = "home" | "history" | "review" | "settings";
+type Flow = "lesson" | "tutor" | "practice" | "progress";
+type Screen = Tab | Flow;
+
+type ChatMessage = { role: "user" | "tutor"; text: string; confidence?: number; references?: string[] };
+type AnswerResult = { choice: number; isCorrect: boolean; explanation: string; masteryScore: number };
+type AppErr = { message: string; retry?: () => void };
+
+const TABS: { key: Tab; label: string; icon: IconName; iconOn: IconName }[] = [
+  { key: "home", label: "Learn", icon: "scan-outline", iconOn: "scan" },
+  { key: "history", label: "Library", icon: "book-outline", iconOn: "book" },
+  { key: "review", label: "Review", icon: "trending-up-outline", iconOn: "trending-up" },
+  { key: "settings", label: "Settings", icon: "settings-outline", iconOn: "settings" },
+];
+
+const DEPTHS: { value: Depth; label: string; blurb: string }[] = [
+  { value: "beginner", label: "Beginner", blurb: "Plain language and the first few steps." },
+  { value: "standard", label: "Standard", blurb: "Every step plus the key technical idea." },
+  { value: "advanced", label: "Advanced", blurb: "Full technical depth and common mistakes." },
+];
+
+const TYPE_ICON: Record<ContentType, IconName> = {
+  equation: "calculator-outline",
+  diagram: "git-network-outline",
+  text: "document-text-outline",
+  graph: "analytics-outline",
+  mixed: "layers-outline",
+};
+
+const SUGGESTIONS = ["Explain it simpler", "Give another example", "Show the math", "Why does this work?"];
+const LETTERS = ["A", "B", "C", "D", "E", "F"];
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("capture");
+  const [screen, setScreen] = useState<Screen>("home");
   const [depth, setDepth] = useState<Depth>("beginner");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<AppErr | null>(null);
   const [lessonId, setLessonId] = useState<string | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
-  const [tutor, setTutor] = useState<TutorResponse | null>(null);
+  const [chat, setChat] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [questions, setQuestions] = useState<PracticeQuestion[]>([]);
   const [qIndex, setQIndex] = useState(0);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<Record<string, AnswerResult>>({});
+  const [showHint, setShowHint] = useState(false);
+  const [quizDone, setQuizDone] = useState(false);
   const [concepts, setConcepts] = useState<ProgressConcept[]>([]);
-  const [reviewConcepts, setReviewConcepts] = useState<ReviewConcept[]>([]);
+  const [reviewConcepts, setReviewConcepts] = useState<ReviewConcept[] | null>(null);
   const [localLessons, setLocalLessons] = useState<LocalLesson[]>([]);
-  const [localConcepts, setLocalConcepts] = useState<Awaited<ReturnType<typeof getLocalConcepts>>>([]);
+  const [localConcepts, setLocalConcepts] = useState<LocalConcept[]>([]);
   const [useMock, setUseMock] = useState(false);
   const [screenReaderOn, setScreenReaderOn] = useState(false);
+  const chatScroll = useRef<ScrollView>(null);
 
-  const layers = useMemo(
-    () => (lesson ? layersForDepth(lesson, depth) : null),
-    [lesson, depth]
-  );
+  const layers = useMemo(() => (lesson ? layersForDepth(lesson, depth) : null), [lesson, depth]);
+  const question = questions[qIndex];
+  const answered = question ? answers[question.id] : undefined;
 
-  // Phase 4 — detect screen reader on mount
   useEffect(() => {
     AccessibilityInfo.isScreenReaderEnabled().then(setScreenReaderOn);
     const sub = AccessibilityInfo.addEventListener("screenReaderChanged", setScreenReaderOn);
     return () => sub.remove();
   }, []);
 
-  // Phase 4 — load local data on mount
   useEffect(() => {
     void getLocalLessons().then(setLocalLessons).catch(() => {});
     void getLocalConcepts().then(setLocalConcepts).catch(() => {});
   }, []);
 
-  // Phase 4 — sync provider setting to api module
   useEffect(() => {
     setProviderOverride(useMock ? "mock" : null);
   }, [useMock]);
 
+  // Run an async action with a blocking loader and a retryable error banner.
+  const run = useCallback(async (label: string, action: () => Promise<void>) => {
+    setError(null);
+    setBusy(label);
+    try {
+      await action();
+    } catch (err) {
+      setError({
+        message: friendlyError(err),
+        retry: () => void run(label, action),
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const goBack = useCallback((): boolean => {
+    if (busy) return true;
+    if (screen === "tutor" || screen === "practice") setScreen("lesson");
+    else if (screen === "progress") setScreen(lesson ? "lesson" : "home");
+    else if (screen !== "home") setScreen("home");
+    else return false;
+    setError(null);
+    return true;
+  }, [screen, lesson, busy]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", goBack);
+    return () => sub.remove();
+  }, [goBack]);
+
+  function navigate(next: Screen) {
+    setError(null);
+    setScreen(next);
+    if (next === "review") void loadReview();
+  }
+
   async function onPick(fromCamera: boolean) {
     setError(null);
-    setBusy(true);
-    try {
-      const permission = fromCamera
-        ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        setError("Camera or library permission is required to capture a page.");
-        return;
-      }
-      const pickerOptions: ImagePicker.ImagePickerOptions = {
-        mediaTypes: ["images"],
-        quality: 0.7,
-      };
-      const result = fromCamera
-        ? await ImagePicker.launchCameraAsync(pickerOptions)
-        : await ImagePicker.launchImageLibraryAsync(pickerOptions);
-      if (result.canceled || !result.assets[0]) {
-        return;
-      }
-      const asset = result.assets[0];
-      const name = asset.fileName || (fromCamera ? "capture.jpg" : "upload.png");
-      const mime = asset.mimeType || "image/jpeg";
+    const permission = fromCamera
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError({
+        message: fromCamera
+          ? "Camera access is off. Allow it in your device settings, or upload an image instead."
+          : "Photo library access is off. Allow it in your device settings to upload an image.",
+      });
+      return;
+    }
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ["images"], quality: 0.7 };
+    const result = fromCamera
+      ? await ImagePicker.launchCameraAsync(options)
+      : await ImagePicker.launchImageLibraryAsync(options);
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const name = asset.fileName || (fromCamera ? "capture.jpg" : "upload.png");
+    const mime = asset.mimeType || "image/jpeg";
+
+    await run("Reading your image, then writing your lesson…", async () => {
       const created = await createLesson({ uri: asset.uri, name, mime, depth });
       setLessonId(created.lessonId);
       setLesson(created.lesson);
+      setChat([]);
+      setDraft("");
+      resetQuiz([]);
       setScreen("lesson");
-      setTutor(null);
-      setFeedback(null);
-      // Phase 4 — persist lesson metadata locally
-      const localEntry: LocalLesson = {
+      const entry: LocalLesson = {
         lessonId: created.lessonId,
         title: created.lesson.title,
         contentType: created.lesson.contentType,
         confidence: created.lesson.confidence,
         savedAt: new Date().toISOString(),
       };
-      await saveLocalLesson(localEntry);
-      setLocalLessons((prev) => [localEntry, ...prev.slice(0, 49)]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create a lesson.");
-    } finally {
-      setBusy(false);
-    }
+      setLocalLessons((prev) => [entry, ...prev.filter((l) => l.lessonId !== entry.lessonId)].slice(0, 50));
+      await saveLocalLesson(entry).catch(() => {});
+    });
   }
 
   async function onAsk(prompt: string) {
-    if (!lessonId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await askQuestion(lessonId, prompt);
-      setTutor(response);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Tutor request failed.");
-    } finally {
-      setBusy(false);
-    }
+    const text = prompt.trim();
+    if (!lessonId || !text || busy) return;
+    setDraft("");
+    setChat((prev) => [...prev, { role: "user", text }]);
+    await run("Thinking…", async () => {
+      const res = await askQuestion(lessonId, text);
+      setChat((prev) => [
+        ...prev,
+        { role: "tutor", text: res.answer, confidence: res.confidence, references: res.references },
+      ]);
+    });
+  }
+
+  function resetQuiz(next: PracticeQuestion[]) {
+    setQuestions(next);
+    setQIndex(0);
+    setAnswers({});
+    setShowHint(false);
+    setQuizDone(false);
   }
 
   async function onPractice() {
     if (!lessonId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await fetchPractice(lessonId);
-      setQuestions(next);
-      setQIndex(0);
-      setFeedback(null);
+    await run("Writing practice questions…", async () => {
+      resetQuiz(await fetchPractice(lessonId));
       setScreen("practice");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Practice failed.");
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
-  async function onAnswer(choice: string) {
-    if (!lessonId || !questions[qIndex]) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await recordAttempt(lessonId, questions[qIndex].id, choice);
-      setFeedback(
-        `${result.isCorrect ? "Correct" : "Not yet"}. ${result.explanation} Mastery ${result.masteryScore.toFixed(2)}.`
-      );
-      // Phase 4 — persist concept mastery locally
+  async function onAnswer(choiceIndex: number) {
+    // Lock after the first answer so an attempt is recorded once per question.
+    if (!lessonId || !question || answered || busy) return;
+    const q = question;
+    await run("Checking your answer…", async () => {
+      const result = await recordAttempt(lessonId, q.id, q.choices[choiceIndex]);
+      setAnswers((prev) => ({ ...prev, [q.id]: { choice: choiceIndex, ...result } }));
       await upsertLocalConcept({
-        name: questions[qIndex].conceptName,
+        name: q.conceptName,
         masteryScore: result.masteryScore,
         lastPracticedAt: new Date().toISOString(),
-      });
-      setLocalConcepts(await getLocalConcepts());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not record the attempt.");
-    } finally {
-      setBusy(false);
-    }
+      }).catch(() => {});
+      setLocalConcepts(await getLocalConcepts().catch(() => localConcepts));
+    });
+  }
+
+  function onNextQuestion() {
+    setShowHint(false);
+    if (qIndex < questions.length - 1) setQIndex((i) => i + 1);
+    else setQuizDone(true);
   }
 
   async function onProgress() {
-    setBusy(true);
-    setError(null);
-    try {
+    await run("Loading your progress…", async () => {
       setConcepts(await fetchProgress());
       setScreen("progress");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Progress failed.");
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
-  async function onReview() {
-    setBusy(true);
-    setError(null);
-    try {
+  async function loadReview() {
+    await run("Loading review…", async () => {
       setReviewConcepts(await fetchReview());
-      setScreen("review");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review fetch failed.");
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
-  function resetToCapture() {
-    setError(null);
-    setBusy(false);
-    setLessonId(null);
-    setLesson(null);
-    setTutor(null);
-    setDraft("");
-    setQuestions([]);
-    setQIndex(0);
-    setFeedback(null);
-    setScreen("capture");
-  }
+  const isTab = (TABS as { key: Screen }[]).some((t) => t.key === screen);
+  const score = Object.values(answers).filter((a) => a.isCorrect).length;
 
-  return (
-    <View style={styles.root}>
-      <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.brand} accessibilityRole="header">
-              Visual Learner
-            </Text>
-            <Text style={styles.lede}>Capture something you do not yet see clearly.</Text>
+  // ── Screens ────────────────────────────────────────────────────────────────
+
+  function HomeScreen() {
+    const avg = localConcepts.length
+      ? localConcepts.reduce((s, c) => s + c.masteryScore, 0) / localConcepts.length
+      : null;
+    const selected = DEPTHS.find((d) => d.value === depth)!;
+    return (
+      <>
+        <View style={s.hero}>
+          <View style={s.heroIcon}>
+            <Icon name="sparkles" size={icon.lg} color={colors.accent} />
           </View>
-          <Pressable
-            onPress={() => setScreen("settings")}
-            style={styles.settingsBtn}
-            accessibilityLabel="Open settings"
-            accessibilityRole="button"
-            accessibilityHint="Configure provider and display options"
-          >
-            <Text style={styles.settingsIcon}>⚙</Text>
-          </Pressable>
+          <Text style={s.heroTitle} accessibilityRole="header">
+            Turn any page into a lesson
+          </Text>
+          <Text style={s.heroBody}>
+            Snap an equation, diagram, graph or paragraph. Get a visual explanation, a tutor and a quick quiz.
+          </Text>
+          <View style={s.heroActions}>
+            <Button
+              label="Camera"
+              iconName="camera"
+              variant="inverse"
+              onPress={() => void onPick(true)}
+              disabled={!!busy}
+              style={{ flex: 1 }}
+            />
+            <Button
+              label="Upload"
+              iconName="image-outline"
+              variant="inverse"
+              onPress={() => void onPick(false)}
+              disabled={!!busy}
+              hint="Choose an image from your photo library"
+              style={{ flex: 1 }}
+            />
+          </View>
         </View>
 
-        {error ? (
-          <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
-            {error}
-          </Text>
-        ) : null}
-        {busy ? <ActivityIndicator color={colors.accent} accessibilityLabel="Loading" /> : null}
+        <Card style={{ gap: space.sm + 4 }}>
+          <Text style={ui.itemTitle}>Explain it at</Text>
+          <Segmented label="Learning depth" value={depth} options={DEPTHS} onChange={setDepth} />
+          <Text style={ui.caption}>{selected.blurb}</Text>
+        </Card>
 
-        {/* ── Capture ─────────────────────────────────────────────────── */}
-        {screen === "capture" ? (
-          <View style={styles.block}>
-            <Text style={styles.empty} accessibilityRole="text">
-              No lesson yet. Photograph a page, diagram, or equation.
-            </Text>
-            <DepthPicker depth={depth} onChange={setDepth} />
-            <Pressable
-              style={styles.button}
-              onPress={() => void onPick(true)}
-              accessibilityLabel="Use camera to capture learning material"
-              accessibilityRole="button"
-            >
-              <Text style={styles.buttonText}>Use camera</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={() => void onPick(false)}
-              accessibilityLabel="Choose image from photo library"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Choose image</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={() => void onReview()}
-              accessibilityLabel="Review concepts due today"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Review due concepts</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={() => setScreen("history")}
-              accessibilityLabel="View history of saved lessons"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>
-                Lesson history ({localLessons.length})
+        {lesson ? (
+          <Pressable
+            onPress={() => navigate("lesson")}
+            accessibilityRole="button"
+            accessibilityLabel={`Continue lesson: ${lesson.title}`}
+            style={({ pressed }) => [ui.card, s.continueCard, pressed && { opacity: 0.85 }]}
+          >
+            <View style={[s.typeIcon, { backgroundColor: colors.highlightSoft }]}>
+              <Icon name="play" color={colors.highlight} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={ui.caption}>Continue where you left off</Text>
+              <Text style={ui.itemTitle} numberOfLines={1}>
+                {lesson.title}
               </Text>
-            </Pressable>
-            <Text style={styles.hint}>
-              {useMock
-                ? "Provider: mock (offline). Switch in Settings to use Gemini."
-                : "Provider: Gemini (live). Name files with equation/diagram/graph/text for mock fixtures."}
-            </Text>
+            </View>
+            <Icon name="chevron-forward" color={colors.muted} />
+          </Pressable>
+        ) : null}
+
+        <View style={s.stats}>
+          <Stat value={String(localLessons.length)} label="Lessons" iconName="book-outline" />
+          <Stat value={String(localConcepts.length)} label="Concepts" iconName="bulb-outline" />
+          <Stat value={avg == null ? "–" : `${Math.round(avg * 100)}%`} label="Mastery" iconName="ribbon-outline" />
+        </View>
+
+        {localLessons.length ? (
+          <View style={{ gap: space.sm + 4 }}>
+            <View style={ui.rowBetween}>
+              <Text style={s.h2} accessibilityRole="header">
+                Recent lessons
+              </Text>
+              <Button label="See all" variant="ghost" onPress={() => navigate("history")} />
+            </View>
+            {localLessons.slice(0, 3).map((l) => (
+              <LessonRow key={l.lessonId} item={l} />
+            ))}
           </View>
+        ) : (
+          <Card style={{ gap: space.sm }}>
+            <Text style={ui.itemTitle}>How it works</Text>
+            <Bullets
+              iconName="checkmark-circle"
+              items={[
+                "Capture a page, a whiteboard or a screenshot.",
+                "Read a step-by-step visual breakdown.",
+                "Ask the tutor anything about it.",
+                "Quiz yourself and track what to review.",
+              ]}
+            />
+          </Card>
+        )}
+
+        {useMock ? (
+          <Badge label="Offline demo mode is on" iconName="cloud-offline-outline" color={colors.warn} soft={colors.warnSoft} />
+        ) : null}
+      </>
+    );
+  }
+
+  function LessonRow({ item }: { item: LocalLesson }) {
+    const open = item.lessonId === lessonId && !!lesson;
+    const content = (
+      <>
+        <View style={s.typeIcon}>
+          <Icon name={TYPE_ICON[item.contentType as ContentType] ?? "document-outline"} color={colors.accent} />
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={ui.itemTitle} numberOfLines={2}>
+            {item.title}
+          </Text>
+          <Text style={ui.caption}>
+            {capitalize(item.contentType)} · {formatDate(item.savedAt)} · {Math.round(item.confidence * 100)}% sure
+          </Text>
+        </View>
+        {open ? <Icon name="chevron-forward" color={colors.muted} /> : null}
+      </>
+    );
+    if (!open) {
+      return (
+        <View style={[ui.card, s.listRow]} accessible accessibilityLabel={`${item.title}, ${item.contentType}, saved ${formatDate(item.savedAt)}`}>
+          {content}
+        </View>
+      );
+    }
+    return (
+      <Pressable
+        onPress={() => navigate("lesson")}
+        accessibilityRole="button"
+        accessibilityLabel={`Open lesson: ${item.title}`}
+        style={({ pressed }) => [ui.card, s.listRow, pressed && { opacity: 0.85 }]}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+
+  function LessonScreen() {
+    if (!lesson || !layers) return <NoLesson />;
+    const low = isLowConfidence(lesson.confidence);
+    const pct = Math.round(lesson.confidence * 100);
+    return (
+      <>
+        <View style={{ gap: space.sm + 4 }}>
+          <View style={s.badgeRow}>
+            <Badge label={capitalize(lesson.contentType)} iconName={TYPE_ICON[lesson.contentType]} />
+            <Badge
+              label={`${pct}% confident`}
+              iconName={low ? "alert-circle" : "shield-checkmark"}
+              color={low ? colors.warn : colors.success}
+              soft={low ? colors.warnSoft : colors.successSoft}
+            />
+          </View>
+          <Text style={s.title} accessibilityRole="header">
+            {lesson.title}
+          </Text>
+        </View>
+
+        {low ? (
+          <Notice
+            tone="warn"
+            iconName="eye-outline"
+            text="I'm not fully sure I read this correctly. Compare with the original page before relying on it."
+          />
         ) : null}
 
-        {/* ── Lesson ──────────────────────────────────────────────────── */}
-        {screen === "lesson" && lesson && layers ? (
-          <View style={styles.block} accessibilityLabel={`Lesson: ${lesson.title}`}>
-            <Text style={styles.kicker} accessibilityRole="text">
-              {lesson.contentType} · confidence {(lesson.confidence * 100).toFixed(0)}%
-            </Text>
-            <Text style={styles.title} accessibilityRole="header">
-              {lesson.title}
-            </Text>
-            {isLowConfidence(lesson.confidence) ? (
-              <Text style={styles.warn} accessibilityRole="alert">
-                Unsure — check the original page. This is extracted evidence plus inference.
-              </Text>
-            ) : null}
-            <DepthPicker depth={depth} onChange={setDepth} />
-            <Section label="What am I looking at?" body={lesson.summary} />
-            <Section label="Evidence" body={lesson.evidence.join(" ")} />
-            <Section label="Intuition" body={lesson.intuition} />
-            <VisualSpecView visual={lesson.visual} />
-            <Section
-              label="Steps"
-              body={layers.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}
-            />
-            {layers.technicalDetails.length ? (
-              <Section label="Technical" body={layers.technicalDetails.join(" ")} />
-            ) : null}
-            {layers.showWorkedExample ? (
-              <Section
-                label="Worked example"
-                body={`${lesson.workedExample.prompt}\n${lesson.workedExample.solution}`}
+        <Segmented label="Learning depth" value={depth} options={DEPTHS} onChange={setDepth} />
+
+        <SectionCard title="What am I looking at?" iconName="eye-outline">
+          <Body>{lesson.summary}</Body>
+        </SectionCard>
+
+        <SectionCard title="The intuition" iconName="bulb-outline" tone={colors.highlight}>
+          <Body>{lesson.intuition}</Body>
+        </SectionCard>
+
+        <VisualSpecView visual={lesson.visual} />
+
+        {layers.steps.length ? (
+          <SectionCard title="Step by step" iconName="footsteps-outline">
+            <View style={{ gap: space.md }}>
+              {layers.steps.map((step, i) => (
+                <View key={i} style={s.stepRow}>
+                  <View style={s.stepNum}>
+                    <Text style={s.stepNumText}>{i + 1}</Text>
+                  </View>
+                  <Text style={[ui.body, { flex: 1 }]}>{step}</Text>
+                </View>
+              ))}
+            </View>
+            {depth === "beginner" && lesson.steps.length > layers.steps.length ? (
+              <Button
+                label={`Show all ${lesson.steps.length} steps`}
+                variant="ghost"
+                iconName="chevron-down"
+                onPress={() => setDepth("standard")}
               />
             ) : null}
-            {layers.showMistakes ? (
-              <Section label="Common mistakes" body={lesson.commonMistakes.join("\n")} />
-            ) : null}
-            <Pressable
-              style={styles.button}
-              onPress={() => setScreen("tutor")}
-              accessibilityLabel="Ask a question about this lesson"
-              accessibilityRole="button"
-            >
-              <Text style={styles.buttonText}>Ask about this</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={() => void onPractice()}
-              accessibilityLabel="Start a practice quiz"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Quiz me</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Capture another image"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Capture another</Text>
-            </Pressable>
-          </View>
+          </SectionCard>
         ) : null}
 
-        {/* ── Tutor ───────────────────────────────────────────────────── */}
-        {screen === "tutor" && lesson ? (
-          <View style={styles.block}>
-            <Text style={styles.title} accessibilityRole="header">
-              Stay with this artifact
-            </Text>
-            {["Explain simpler", "Give another example", "Show the math", "Quiz me"].map(
-              (label) => (
-                <Pressable
-                  key={label}
-                  style={styles.secondary}
-                  onPress={() => void onAsk(label)}
-                  accessibilityLabel={label}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.secondaryText}>{label}</Text>
-                </Pressable>
-              )
-            )}
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Ask a specific question"
-              placeholderTextColor={colors.muted}
-              style={styles.input}
-              accessibilityLabel="Custom question input"
-              accessibilityHint="Type your question about the captured material"
-              returnKeyType="send"
-              onSubmitEditing={() => void onAsk(draft || "What is the main idea?")}
-            />
-            <Pressable
-              style={styles.button}
-              onPress={() => void onAsk(draft || "What is the main idea?")}
-              accessibilityLabel="Submit question to tutor"
-              accessibilityRole="button"
-            >
-              <Text style={styles.buttonText}>Ask</Text>
-            </Pressable>
-            {tutor ? (
-              <View accessibilityLabel={`Answer: ${tutor.answer}`}>
-                <Section label="Answer" body={tutor.answer} />
-                <Text style={styles.hint}>
-                  Confidence {(tutor.confidence * 100).toFixed(0)}% ·{" "}
-                  {tutor.references.join(" · ")}
-                </Text>
+        {layers.showWorkedExample && (lesson.workedExample.prompt || lesson.workedExample.solution) ? (
+          <SectionCard title="Worked example" iconName="create-outline" tone={colors.success}>
+            {lesson.workedExample.prompt ? <Body>{lesson.workedExample.prompt}</Body> : null}
+            {lesson.workedExample.solution ? (
+              <View style={s.solution}>
+                <Text style={[ui.caption, { fontWeight: "700", color: colors.success }]}>SOLUTION</Text>
+                <Body>{lesson.workedExample.solution}</Body>
               </View>
-            ) : (
-              <Text style={styles.empty}>
-                No question yet. Keep it about the captured page.
+            ) : null}
+          </SectionCard>
+        ) : null}
+
+        {layers.technicalDetails.length ? (
+          <SectionCard title="Technical detail" iconName="code-slash-outline">
+            <Bullets items={layers.technicalDetails} />
+          </SectionCard>
+        ) : null}
+
+        {layers.showMistakes && lesson.commonMistakes.length ? (
+          <SectionCard title="Common mistakes" iconName="warning-outline" tone={colors.danger}>
+            <Bullets items={lesson.commonMistakes} iconName="close-circle" color={colors.danger} />
+          </SectionCard>
+        ) : null}
+
+        {lesson.evidence.length ? (
+          <SectionCard title="What I read from your image" iconName="scan-outline" tone={colors.muted}>
+            <Bullets items={lesson.evidence} color={colors.muted} />
+          </SectionCard>
+        ) : null}
+      </>
+    );
+  }
+
+  function NoLesson() {
+    return (
+      <EmptyState iconName="scan-outline" title="No lesson open" body="Capture a page to start a lesson.">
+        <Button label="Go to Learn" onPress={() => navigate("home")} style={{ alignSelf: "stretch", marginTop: space.sm }} />
+      </EmptyState>
+    );
+  }
+
+  function PracticeScreen() {
+    if (quizDone) {
+      const total = questions.length;
+      return (
+        <EmptyState
+          iconName={score === total ? "trophy" : "ribbon-outline"}
+          title={`You got ${score} of ${total}`}
+          body={
+            score === total
+              ? "Perfect round. This concept is sticking."
+              : score / total >= 0.5
+                ? "Nice work. Another round on the ones you missed will lock them in."
+                : "Good start. Re-read the steps, then try another round."
+          }
+        >
+          <View style={{ alignSelf: "stretch", gap: space.sm, marginTop: space.sm }}>
+            <Button label="See my progress" iconName="trending-up" onPress={() => void onProgress()} />
+            <Button label="Try another round" variant="secondary" iconName="refresh" onPress={() => void onPractice()} />
+            <Button label="Back to lesson" variant="ghost" onPress={() => setScreen("lesson")} />
+          </View>
+        </EmptyState>
+      );
+    }
+    if (!question) {
+      return (
+        <EmptyState iconName="help-circle-outline" title="No questions yet" body="The tutor couldn't make questions for this page.">
+          <Button label="Try again" onPress={() => void onPractice()} style={{ alignSelf: "stretch", marginTop: space.sm }} />
+        </EmptyState>
+      );
+    }
+    return (
+      <>
+        <View style={{ gap: space.sm }}>
+          <View style={ui.rowBetween}>
+            <Text style={ui.caption}>
+              Question {qIndex + 1} of {questions.length}
+            </Text>
+            <Badge label={question.conceptName} />
+          </View>
+          <ProgressBar value={(qIndex + (answered ? 1 : 0)) / questions.length} />
+        </View>
+        <Text style={s.title} accessibilityRole="header">
+          {question.prompt}
+        </Text>
+        <View style={{ gap: space.sm + 2 }} accessibilityRole="radiogroup">
+          {question.choices.map((choice, idx) => {
+            const isPicked = answered?.choice === idx;
+            const isRight = !!answered && idx === question.correctIndex;
+            const state = isRight ? "right" : isPicked ? "wrong" : answered ? "dim" : "idle";
+            return (
+              <Pressable
+                key={`${question.id}-${idx}`}
+                onPress={() => void onAnswer(idx)}
+                disabled={!!answered || !!busy}
+                accessibilityRole="radio"
+                accessibilityLabel={`${LETTERS[idx] ?? idx + 1}: ${choice}${isRight ? ", correct answer" : isPicked ? ", your answer, incorrect" : ""}`}
+                accessibilityState={{ checked: isPicked, disabled: !!answered }}
+                style={({ pressed }) => [
+                  s.choice,
+                  state === "right" && s.choiceRight,
+                  state === "wrong" && s.choiceWrong,
+                  state === "dim" && { opacity: 0.6 },
+                  pressed && { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+                ]}
+              >
+                <View
+                  style={[
+                    s.letter,
+                    state === "right" && { backgroundColor: colors.success },
+                    state === "wrong" && { backgroundColor: colors.danger },
+                  ]}
+                >
+                  {state === "right" || state === "wrong" ? (
+                    <Icon name={state === "right" ? "checkmark" : "close"} size={icon.sm} color="#fff" />
+                  ) : (
+                    <Text style={s.letterText}>{LETTERS[idx] ?? idx + 1}</Text>
+                  )}
+                </View>
+                <Text style={[ui.body, { flex: 1 }]}>{choice}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {answered ? (
+          <Notice
+            tone={answered.isCorrect ? "success" : "danger"}
+            iconName={answered.isCorrect ? "checkmark-circle" : "information-circle"}
+            title={answered.isCorrect ? "Correct!" : "Not quite"}
+            text={`${answered.explanation}\nMastery now ${Math.round(answered.masteryScore * 100)}%.`}
+          />
+        ) : question.hint ? (
+          showHint ? (
+            <Notice tone="info" iconName="bulb-outline" title="Hint" text={question.hint} />
+          ) : (
+            <Button label="Show a hint" variant="ghost" iconName="bulb-outline" onPress={() => setShowHint(true)} />
+          )
+        ) : null}
+      </>
+    );
+  }
+
+  function TutorScreen() {
+    if (!lesson) return <NoLesson />;
+    return (
+      <>
+        <Card style={s.tutorIntro}>
+          <View style={s.typeIcon}>
+            <Icon name="chatbubbles-outline" color={colors.accent} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={ui.caption}>Ask about</Text>
+            <Text style={ui.itemTitle} numberOfLines={2}>
+              {lesson.title}
+            </Text>
+          </View>
+        </Card>
+        {chat.length === 0 ? (
+          <Text style={[ui.caption, { textAlign: "center" }]}>
+            Answers stay grounded in the page you captured. Try one of these:
+          </Text>
+        ) : null}
+        {chat.map((m, i) => (
+          <View
+            key={i}
+            style={[s.bubble, m.role === "user" ? s.bubbleUser : s.bubbleTutor]}
+            accessibilityLabel={`${m.role === "user" ? "You" : "Tutor"}: ${m.text}`}
+          >
+            <Text style={[ui.body, m.role === "user" && { color: colors.onAccent }]}>{m.text}</Text>
+            {m.role === "tutor" && m.confidence != null ? (
+              <Text style={ui.caption}>
+                {Math.round(m.confidence * 100)}% confident
+                {m.references?.length ? ` · ${m.references.join(" · ")}` : ""}
               </Text>
-            )}
-            <Pressable
-              style={styles.secondary}
-              onPress={() => setScreen("lesson")}
-              accessibilityLabel="Back to lesson"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Back to lesson</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Capture another image"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Capture another</Text>
-            </Pressable>
+            ) : null}
+          </View>
+        ))}
+        {busy && screen === "tutor" ? (
+          <View style={[s.bubble, s.bubbleTutor, { flexDirection: "row", gap: space.sm, alignItems: "center" }]}>
+            <ActivityIndicator color={colors.accent} />
+            <Text style={ui.caption}>Thinking…</Text>
           </View>
         ) : null}
+        <View style={s.chips}>
+          {SUGGESTIONS.map((q) => (
+            <Pressable
+              key={q}
+              onPress={() => void onAsk(q)}
+              disabled={!!busy}
+              accessibilityRole="button"
+              accessibilityLabel={`Ask: ${q}`}
+              style={({ pressed }) => [s.chip, pressed && { backgroundColor: colors.lineStrong }, busy && { opacity: 0.5 }]}
+            >
+              <Text style={s.chipText}>{q}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </>
+    );
+  }
 
-        {/* ── Practice ────────────────────────────────────────────────── */}
-        {screen === "practice" && questions[qIndex] ? (
-          <View style={styles.block}>
-            <Text style={styles.kicker} accessibilityRole="text">
-              Question {qIndex + 1} of {questions.length} · {questions[qIndex].kind}
+  function ProgressScreen() {
+    return (
+      <>
+        <Text style={ui.caption}>Lowest mastery first — focus here next.</Text>
+        {concepts.length === 0 ? (
+          <EmptyState iconName="stats-chart-outline" title="No practice yet" body="Answer a quiz question to start tracking mastery." />
+        ) : (
+          concepts.map((c) => (
+            <MasteryRow key={c.name} name={c.name} score={c.masteryScore} subtitle={c.lastPracticedAt ? `practiced ${formatDate(c.lastPracticedAt)}` : undefined} />
+          ))
+        )}
+        <Button label="What's due for review" variant="secondary" iconName="calendar-outline" onPress={() => navigate("review")} />
+      </>
+    );
+  }
+
+  function HistoryScreen() {
+    return localLessons.length === 0 ? (
+      <EmptyState iconName="book-outline" title="Your library is empty" body="Every lesson you create is saved here on this device.">
+        <Button label="Capture your first page" iconName="camera" onPress={() => navigate("home")} style={{ alignSelf: "stretch", marginTop: space.sm }} />
+      </EmptyState>
+    ) : (
+      <>
+        <Text style={ui.caption}>
+          {localLessons.length} lesson{localLessons.length === 1 ? "" : "s"} saved on this device
+        </Text>
+        {localLessons.map((l) => (
+          <LessonRow key={l.lessonId} item={l} />
+        ))}
+      </>
+    );
+  }
+
+  function ReviewScreen() {
+    return (
+      <>
+        <Text style={s.h2} accessibilityRole="header">
+          Due today
+        </Text>
+        {reviewConcepts == null ? (
+          busy ? null : (
+            <Button label="Load review" iconName="refresh" variant="secondary" onPress={() => void loadReview()} />
+          )
+        ) : reviewConcepts.length === 0 ? (
+          <EmptyState iconName="checkmark-done-circle-outline" title="You're all caught up" body="Nothing is due. Practice more to schedule future reviews." />
+        ) : (
+          reviewConcepts.map((c) => <MasteryRow key={c.name} name={c.name} score={c.masteryScore} />)
+        )}
+        {localConcepts.length ? (
+          <>
+            <Text style={[s.h2, { marginTop: space.sm }]} accessibilityRole="header">
+              All concepts on this device
             </Text>
-            <Text style={styles.title} accessibilityRole="header">
-              {questions[qIndex].prompt}
-            </Text>
-            {questions[qIndex].choices.map((choice, idx) => (
-              <Pressable
-                key={choice}
-                style={styles.secondary}
-                onPress={() => void onAnswer(choice)}
-                accessibilityLabel={`Choice ${idx + 1}: ${choice}`}
-                accessibilityRole="button"
-                accessibilityHint="Tap to select this answer"
-              >
-                <Text style={styles.secondaryText}>{choice}</Text>
-              </Pressable>
+            {localConcepts.map((c) => (
+              <MasteryRow
+                key={c.name}
+                name={c.name}
+                score={c.masteryScore}
+                subtitle={c.lastPracticedAt ? `practiced ${formatDate(c.lastPracticedAt)}` : undefined}
+              />
             ))}
-            <Text style={styles.hint} accessibilityLabel={`Hint: ${questions[qIndex].hint}`}>
-              Hint: {questions[qIndex].hint}
-            </Text>
-            {feedback ? (
-              <Section label="After answering" body={feedback} />
-            ) : (
-              <Text style={styles.empty}>Choose an answer. You will get the explanation next.</Text>
-            )}
-            {feedback && qIndex < questions.length - 1 ? (
-              <Pressable
-                style={styles.button}
-                onPress={() => {
-                  setQIndex((i) => i + 1);
-                  setFeedback(null);
-                }}
-                accessibilityLabel="Next question"
-                accessibilityRole="button"
-              >
-                <Text style={styles.buttonText}>Next question</Text>
-              </Pressable>
-            ) : null}
-            {feedback && qIndex === questions.length - 1 ? (
-              <Pressable
-                style={styles.button}
-                onPress={() => void onProgress()}
-                accessibilityLabel="See weak concepts"
-                accessibilityRole="button"
-              >
-                <Text style={styles.buttonText}>See weak concepts</Text>
-              </Pressable>
-            ) : null}
-          </View>
+          </>
         ) : null}
+      </>
+    );
+  }
 
-        {/* ── Progress ────────────────────────────────────────────────── */}
-        {screen === "progress" ? (
-          <View style={styles.block}>
-            <Text style={styles.title} accessibilityRole="header">
-              Concepts to revisit
-            </Text>
-            {concepts.length === 0 ? (
-              <Text style={styles.empty}>No practice yet. Complete a question first.</Text>
-            ) : (
-              concepts.map((concept) => (
-                <View
-                  key={concept.name}
-                  style={styles.row}
-                  accessibilityLabel={`${concept.name}: mastery ${concept.masteryScore.toFixed(2)}`}
-                >
-                  <Text style={styles.nodeLabel}>{concept.name}</Text>
-                  <Text style={styles.hint}>mastery {concept.masteryScore.toFixed(2)}</Text>
-                </View>
-              ))
-            )}
-            <Pressable
-              style={styles.secondary}
-              onPress={() => void onReview()}
-              accessibilityLabel="See review due today"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>See review due today</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Capture another image"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Capture another</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {/* ── Review ──────────────────────────────────────────────────── */}
-        {screen === "review" ? (
-          <View style={styles.block}>
-            <Text style={styles.title} accessibilityRole="header">
-              Review due today
-            </Text>
-            {reviewConcepts.length === 0 ? (
-              <View>
-                <Text style={styles.empty}>Nothing due — you are ahead of schedule.</Text>
-                <Text style={styles.hint}>Practice more questions to schedule future reviews.</Text>
-              </View>
-            ) : (
-              reviewConcepts.map((concept) => {
-                const pct = Math.round(concept.masteryScore * 100);
-                return (
-                  <View
-                    key={concept.name}
-                    style={styles.reviewCard}
-                    accessibilityLabel={`${concept.name}: mastery ${pct}%`}
-                  >
-                    <Text style={styles.nodeLabel}>{concept.name}</Text>
-                    <View style={styles.masteryBarBg} accessibilityElementsHidden>
-                      <View
-                        style={[styles.masteryBarFill, { width: `${pct}%` as unknown as number }]}
-                      />
-                    </View>
-                    <Text style={styles.hint}>mastery {pct}%</Text>
-                  </View>
-                );
-              })
-            )}
-            <Pressable
-              style={styles.button}
-              onPress={resetToCapture}
-              accessibilityLabel="Capture image to practise"
-              accessibilityRole="button"
-            >
-              <Text style={styles.buttonText}>Capture to practise</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Back to home screen"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Back to home</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {/* ── History ─────────────────────────────────────────────────── */}
-        {screen === "history" ? (
-          <View style={styles.block}>
-            <Text style={styles.title} accessibilityRole="header">
-              Lesson history
-            </Text>
-            {localLessons.length === 0 ? (
-              <Text style={styles.empty}>No lessons saved on device yet.</Text>
-            ) : (
-              localLessons.map((l) => (
-                <View
-                  key={l.lessonId}
-                  style={styles.historyCard}
-                  accessibilityLabel={`${l.title}, ${l.contentType}, confidence ${Math.round(l.confidence * 100)}%`}
-                >
-                  <Text style={styles.nodeLabel}>{l.title}</Text>
-                  <Text style={styles.kicker}>
-                    {l.contentType} · {Math.round(l.confidence * 100)}% confidence
-                  </Text>
-                  <Text style={styles.hint}>{l.savedAt.slice(0, 10)}</Text>
-                </View>
-              ))
-            )}
-            <Text style={styles.sectionDivider}>On-device mastery</Text>
-            {localConcepts.length === 0 ? (
-              <Text style={styles.empty}>No concept scores cached locally yet.</Text>
-            ) : (
-              localConcepts.map((c) => {
-                const pct = Math.round(c.masteryScore * 100);
-                return (
-                  <View
-                    key={c.name}
-                    style={styles.reviewCard}
-                    accessibilityLabel={`${c.name}: ${pct}% mastery`}
-                  >
-                    <Text style={styles.nodeLabel}>{c.name}</Text>
-                    <View style={styles.masteryBarBg} accessibilityElementsHidden>
-                      <View
-                        style={[styles.masteryBarFill, { width: `${pct}%` as unknown as number }]}
-                      />
-                    </View>
-                    <Text style={styles.hint}>{pct}%</Text>
-                  </View>
-                );
-              })
-            )}
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Back to home"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Back to home</Text>
-            </Pressable>
-          </View>
-        ) : null}
-
-        {/* ── Settings ────────────────────────────────────────────────── */}
-        {screen === "settings" ? (
-          <View style={styles.block}>
-            <Text style={styles.title} accessibilityRole="header">
-              Settings
-            </Text>
-
-            <View style={styles.settingRow}>
-              <View style={styles.settingInfo}>
-                <Text style={styles.nodeLabel}>Use mock provider (offline)</Text>
-                <Text style={styles.hint}>
-                  {useMock
-                    ? "Responses come from local fixtures — no API key needed."
-                    : "Responses come from Gemini (requires GEMINI_API_KEY on the server)."}
-                </Text>
-              </View>
+  function SettingsScreen() {
+    return (
+      <>
+        <Card style={{ gap: 0, paddingVertical: space.sm }}>
+          <SettingRow
+            iconName="cloud-offline-outline"
+            title="Offline demo mode"
+            body={useMock ? "Using built-in sample lessons. No AI calls." : "Using the live AI tutor on your server."}
+            right={
               <Switch
                 value={useMock}
                 onValueChange={setUseMock}
-                thumbColor={useMock ? colors.accent : colors.muted}
-                trackColor={{ false: colors.line, true: colors.line }}
-                accessibilityLabel="Toggle mock provider"
-                accessibilityHint={
-                  useMock ? "Currently offline mock mode" : "Currently using Gemini live mode"
-                }
+                trackColor={{ false: colors.lineStrong, true: colors.accent }}
+                thumbColor="#FFFFFF"
+                accessibilityLabel="Offline demo mode"
               />
-            </View>
+            }
+          />
+          <Divider />
+          <SettingRow iconName="server-outline" title="Server" body={API_URL} />
+          <Divider />
+          <SettingRow
+            iconName="accessibility-outline"
+            title="Screen reader"
+            body={screenReaderOn ? "Detected. All controls are labelled." : "Not detected."}
+          />
+        </Card>
+        <Card style={{ gap: 0, paddingVertical: space.sm }}>
+          <SettingRow iconName="book-outline" title="Saved lessons" body={`${localLessons.length} on this device`} />
+          <Divider />
+          <SettingRow iconName="bulb-outline" title="Tracked concepts" body={`${localConcepts.length} on this device`} />
+        </Card>
+        <Text style={[ui.caption, { textAlign: "center" }]}>Visual Learner · v0.1.0</Text>
+      </>
+    );
+  }
 
-            <View style={styles.settingRow}>
-              <View style={styles.settingInfo}>
-                <Text style={styles.nodeLabel}>Screen reader detected</Text>
-                <Text style={styles.hint}>
-                  {screenReaderOn ? "Active — all interactive elements have labels." : "Not active."}
-                </Text>
-              </View>
-            </View>
+  // ── Layout ─────────────────────────────────────────────────────────────────
 
-            <View style={styles.settingRow}>
-              <View style={styles.settingInfo}>
-                <Text style={styles.nodeLabel}>Local lesson cache</Text>
-                <Text style={styles.hint}>{localLessons.length} lessons stored on device.</Text>
-              </View>
-            </View>
+  const flowTitle: Record<Flow, string> = {
+    lesson: "Lesson",
+    tutor: "Ask the tutor",
+    practice: quizDone ? "Results" : "Practice",
+    progress: "Your progress",
+  };
+  const tabTitle: Record<Tab, { title: string; sub: string }> = {
+    home: { title: "Visual Learner", sub: "See it clearly, then remember it." },
+    history: { title: "Library", sub: "Lessons you've captured." },
+    review: { title: "Review", sub: "Revisit concepts before they fade." },
+    settings: { title: "Settings", sub: "Tutor and device options." },
+  };
 
-            <View style={styles.settingRow}>
-              <View style={styles.settingInfo}>
-                <Text style={styles.nodeLabel}>Local concept mastery</Text>
-                <Text style={styles.hint}>
-                  {localConcepts.length} concepts cached on device.
-                </Text>
-              </View>
-            </View>
+  const footer = (() => {
+    if (screen === "lesson" && lesson)
+      return (
+        <View style={s.footerRow}>
+          <Button label="Ask tutor" iconName="chatbubbles-outline" variant="secondary" onPress={() => navigate("tutor")} disabled={!!busy} style={{ flex: 1 }} />
+          <Button label="Quiz me" iconName="flash" onPress={() => void onPractice()} disabled={!!busy} style={{ flex: 1 }} />
+        </View>
+      );
+    if (screen === "practice" && answered && !quizDone)
+      return (
+        <Button
+          label={qIndex < questions.length - 1 ? "Next question" : "See results"}
+          iconName={qIndex < questions.length - 1 ? "arrow-forward" : "trophy-outline"}
+          onPress={onNextQuestion}
+        />
+      );
+    if (screen === "tutor" && lesson)
+      return (
+        <View style={s.inputRow}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="Ask anything about this page…"
+            placeholderTextColor={colors.muted}
+            style={s.input}
+            accessibilityLabel="Your question"
+            returnKeyType="send"
+            onSubmitEditing={() => void onAsk(draft)}
+            editable={!busy}
+            multiline={false}
+          />
+          <Pressable
+            onPress={() => void onAsk(draft)}
+            disabled={!draft.trim() || !!busy}
+            accessibilityRole="button"
+            accessibilityLabel="Send question"
+            accessibilityState={{ disabled: !draft.trim() || !!busy }}
+            style={({ pressed }) => [s.send, (!draft.trim() || busy) && { opacity: 0.4 }, pressed && { opacity: 0.8 }]}
+          >
+            <Icon name="arrow-up" color={colors.onAccent} />
+          </Pressable>
+        </View>
+      );
+    return null;
+  })();
 
-            <Pressable
-              style={styles.secondary}
-              onPress={resetToCapture}
-              accessibilityLabel="Back to home"
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryText}>Back to home</Text>
-            </Pressable>
+  // Called as functions (not <Screen/>) so state-driven re-renders don't remount inputs.
+  const body: Record<Screen, () => JSX.Element> = {
+    home: HomeScreen,
+    history: HistoryScreen,
+    review: ReviewScreen,
+    settings: SettingsScreen,
+    lesson: LessonScreen,
+    tutor: TutorScreen,
+    practice: PracticeScreen,
+    progress: ProgressScreen,
+  };
+  const showOverlay = !!busy && !(screen === "tutor" && busy === "Thinking…");
+
+  return (
+    <SafeAreaView style={s.root}>
+      <StatusBar style="dark" />
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={s.header}>
+          {isTab ? (
+            <View style={s.headerInner}>
+              <Text style={s.brand} accessibilityRole="header">
+                {tabTitle[screen as Tab].title}
+              </Text>
+              <Text style={ui.caption}>{tabTitle[screen as Tab].sub}</Text>
+            </View>
+          ) : (
+            <View style={[s.headerInner, s.flowHeader]}>
+              <IconButton name="arrow-back" label="Go back" onPress={goBack} disabled={!!busy} />
+              <Text style={s.flowTitle} accessibilityRole="header" numberOfLines={1}>
+                {flowTitle[screen as Flow]}
+              </Text>
+              <IconButton name="home-outline" label="Go home" onPress={() => navigate("home")} disabled={!!busy} />
+            </View>
+          )}
+        </View>
+
+        {error ? (
+          <View style={s.errorWrap}>
+            <View style={s.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+              <Icon name="alert-circle" color={colors.danger} />
+              <Text style={[ui.body, { flex: 1, color: colors.danger, fontSize: 15 }]}>{error.message}</Text>
+              {error.retry ? (
+                <Pressable onPress={error.retry} accessibilityRole="button" accessibilityLabel="Retry" style={s.errorBtn}>
+                  <Text style={{ color: colors.danger, fontWeight: "700" }}>Retry</Text>
+                </Pressable>
+              ) : null}
+              <IconButton name="close" label="Dismiss error" color={colors.danger} onPress={() => setError(null)} />
+            </View>
           </View>
         ) : null}
-      </ScrollView>
-    </View>
-  );
-}
 
-function DepthPicker({
-  depth,
-  onChange,
-}: {
-  depth: Depth;
-  onChange: (value: Depth) => void;
-}) {
-  return (
-    <View
-      style={styles.row}
-      accessibilityRole="radiogroup"
-      accessibilityLabel="Select learning depth"
-    >
-      {(["beginner", "standard", "advanced"] as Depth[]).map((value) => (
-        <Pressable
-          key={value}
-          onPress={() => onChange(value)}
-          style={[styles.chip, depth === value && styles.chipOn]}
-          accessibilityRole="radio"
-          accessibilityLabel={value}
-          accessibilityState={{ selected: depth === value }}
+        <ScrollView
+          key={screen}
+          ref={screen === "tutor" ? chatScroll : undefined}
+          onContentSizeChange={() => screen === "tutor" && chatScroll.current?.scrollToEnd({ animated: true })}
+          contentContainerStyle={s.scroll}
+          keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.chipText}>{value}</Text>
-        </Pressable>
-      ))}
-    </View>
+          {body[screen]()}
+        </ScrollView>
+
+        {footer ? <View style={s.footer}>{footer}</View> : null}
+
+        {isTab ? (
+          <View style={s.tabBar} accessibilityRole="tablist">
+            {TABS.map((t) => {
+              const on = screen === t.key;
+              return (
+                <Pressable
+                  key={t.key}
+                  onPress={() => navigate(t.key)}
+                  disabled={!!busy}
+                  accessibilityRole="tab"
+                  accessibilityLabel={t.label}
+                  accessibilityState={{ selected: on }}
+                  style={s.tab}
+                >
+                  <View style={[s.tabPill, on && { backgroundColor: colors.accentSoft }]}>
+                    <Icon name={on ? t.iconOn : t.icon} size={icon.lg} color={on ? colors.accent : colors.muted} />
+                  </View>
+                  <Text style={[s.tabLabel, on && { color: colors.accent }]}>{t.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
+      </KeyboardAvoidingView>
+
+      {showOverlay ? (
+        <View style={s.overlay} accessibilityViewIsModal accessibilityLiveRegion="polite">
+          <View style={s.overlayCard}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={[ui.itemTitle, { textAlign: "center" }]}>{busy}</Text>
+            {busy?.startsWith("Reading") ? (
+              <Text style={[ui.caption, { textAlign: "center" }]}>This usually takes 5–15 seconds.</Text>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+    </SafeAreaView>
   );
 }
 
-function Section({ label, body }: { label: string; body: string }) {
+// ── Small presentational pieces ──────────────────────────────────────────────
+
+function Stat({ value, label, iconName }: { value: string; label: string; iconName: IconName }) {
   return (
-    <View style={styles.section} accessibilityLabel={`${label}: ${body}`}>
-      <Text style={styles.kicker}>{label}</Text>
-      <Text style={styles.body}>{body}</Text>
+    <View style={[ui.card, s.stat]} accessible accessibilityLabel={`${label}: ${value}`}>
+      <Icon name={iconName} color={colors.accent} />
+      <Text style={s.statValue}>{value}</Text>
+      <Text style={ui.caption}>{label}</Text>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
+const NOTICE_TONES = {
+  warn: { fg: colors.warn, bg: colors.warnSoft },
+  success: { fg: colors.success, bg: colors.successSoft },
+  danger: { fg: colors.danger, bg: colors.dangerSoft },
+  info: { fg: colors.accent, bg: colors.accentSoft },
+};
+
+function Notice({ tone, iconName, title, text }: { tone: keyof typeof NOTICE_TONES; iconName: IconName; title?: string; text: string }) {
+  const t = NOTICE_TONES[tone];
+  return (
+    <View style={[s.notice, { backgroundColor: t.bg }]} accessibilityLiveRegion="polite">
+      <Icon name={iconName} color={t.fg} />
+      <View style={{ flex: 1, gap: 2 }}>
+        {title ? <Text style={[ui.itemTitle, { color: t.fg }]}>{title}</Text> : null}
+        <Text style={[ui.body, { color: colors.text, fontSize: 15 }]}>{text}</Text>
+      </View>
+    </View>
+  );
+}
+
+function SettingRow({ iconName, title, body, right }: { iconName: IconName; title: string; body: string; right?: JSX.Element }) {
+  return (
+    <View style={s.settingRow}>
+      <View style={s.typeIcon}>
+        <Icon name={iconName} color={colors.accent} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={ui.itemTitle}>{title}</Text>
+        <Text style={ui.caption}>{body}</Text>
+      </View>
+      {right}
+    </View>
+  );
+}
+
+function Divider() {
+  return <View style={{ height: 1, backgroundColor: colors.line, marginLeft: 56 }} />;
+}
+
+function capitalize(v: string): string {
+  return v ? v[0].toUpperCase() + v.slice(1) : v;
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso.slice(0, 10) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function friendlyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : "";
+  if (/network request failed|failed to fetch|load failed/i.test(msg)) {
+    return "Can't reach the Visual Learner server. Check that the API is running and you're online.";
+  }
+  if (/provider returned HTTP (429|5\d\d)|provider request failed/i.test(msg)) {
+    return "The AI tutor is busy right now. Wait a moment and retry, or turn on offline demo mode in Settings.";
+  }
+  return msg || "Something went wrong. Please try again.";
+}
+
+const s = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    paddingTop: Platform.OS === "android" ? RNStatusBar.currentHeight : 0,
+  },
+  header: { paddingHorizontal: space.lg - 4, paddingTop: space.sm, paddingBottom: space.sm },
+  headerInner: { maxWidth: 720, width: "100%", alignSelf: "center", gap: 2 },
+  flowHeader: { flexDirection: "row", alignItems: "center", marginHorizontal: -space.sm },
+  brand: { color: colors.text, fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
+  flowTitle: { flex: 1, color: colors.text, fontSize: 18, fontWeight: "700", textAlign: "center" },
   scroll: {
-    padding: 24,
-    paddingTop: 56,
-    gap: 16,
+    padding: space.lg - 4,
+    paddingTop: space.sm,
+    paddingBottom: space.xl,
+    gap: space.md,
     maxWidth: 720,
     width: "100%",
     alignSelf: "center",
   },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-  },
-  brand: {
-    color: colors.accent,
-    fontSize: 14,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  lede: { color: colors.text, fontSize: 28, fontWeight: "600", lineHeight: 34 },
-  settingsBtn: { padding: 8 },
-  settingsIcon: { color: colors.muted, fontSize: 22 },
-  block: { gap: 12 },
-  title: { color: colors.text, fontSize: 22, fontWeight: "600" },
-  kicker: {
-    color: colors.muted,
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  body: { color: colors.text, fontSize: 16, lineHeight: 24 },
-  empty: { color: colors.muted, fontSize: 16, lineHeight: 24 },
-  error: { color: colors.danger, fontSize: 15 },
-  warn: { color: colors.warn, fontSize: 15, lineHeight: 22 },
-  hint: { color: colors.muted, fontSize: 13, lineHeight: 18 },
-  button: {
+  h2: { color: colors.text, fontSize: 18, fontWeight: "700" },
+  title: { color: colors.text, fontSize: 24, fontWeight: "800", lineHeight: 31, letterSpacing: -0.3 },
+  hero: {
     backgroundColor: colors.accent,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.sm + 4,
+    ...shadow,
+  },
+  heroIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.md,
+    backgroundColor: colors.panel,
     alignItems: "center",
-    minHeight: 48,
     justifyContent: "center",
   },
-  secondary: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+  heroTitle: { color: colors.onAccent, fontSize: 26, fontWeight: "800", lineHeight: 32, letterSpacing: -0.4 },
+  heroBody: { color: "#E0E7FF", fontSize: 16, lineHeight: 23 },
+  heroActions: { flexDirection: "row", gap: space.sm + 4, marginTop: space.sm, flexWrap: "wrap" },
+  continueCard: { flexDirection: "row", alignItems: "center", gap: space.md - 4, borderColor: colors.highlightSoft },
+  stats: { flexDirection: "row", gap: space.sm + 4 },
+  stat: { flex: 1, alignItems: "flex-start", gap: 4, padding: space.md },
+  statValue: { color: colors.text, fontSize: 22, fontWeight: "800" },
+  listRow: { flexDirection: "row", alignItems: "center", gap: space.md - 4, padding: space.md },
+  typeIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm + 2,
+    backgroundColor: colors.accentSoft,
     alignItems: "center",
-    minHeight: 48,
     justifyContent: "center",
   },
-  buttonText: { color: colors.bg, fontWeight: "700" },
-  secondaryText: { color: colors.text, fontWeight: "600" },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    color: colors.text,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 48,
+  badgeRow: { flexDirection: "row", gap: space.sm, flexWrap: "wrap" },
+  stepRow: { flexDirection: "row", gap: space.md - 4, alignItems: "flex-start" },
+  stepNum: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: -1,
   },
-  section: { gap: 6 },
-  row: {
+  stepNumText: { color: colors.onAccent, fontWeight: "800", fontSize: 14 },
+  solution: { backgroundColor: colors.successSoft, borderRadius: radius.md, padding: space.md, gap: 4 },
+  choice: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
     alignItems: "center",
+    gap: space.md - 4,
+    minHeight: 56,
+    padding: space.md - 2,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    borderColor: colors.line,
+    backgroundColor: colors.panel,
   },
-  chip: {
+  choiceRight: { borderColor: colors.success, backgroundColor: colors.successSoft },
+  choiceWrong: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
+  letter: {
+    width: 30,
+    height: 30,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  letterText: { color: colors.accent, fontWeight: "800" },
+  notice: { flexDirection: "row", gap: space.sm + 4, padding: space.md, borderRadius: radius.md, alignItems: "flex-start" },
+  tutorIntro: { flexDirection: "row", alignItems: "center", gap: space.md - 4, padding: space.md },
+  bubble: { maxWidth: "88%", padding: space.md - 2, borderRadius: radius.md + 2, gap: 6 },
+  bubbleUser: { alignSelf: "flex-end", backgroundColor: colors.accent, borderBottomRightRadius: 6 },
+  bubbleTutor: {
+    alignSelf: "flex-start",
+    backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.line,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderBottomLeftRadius: 6,
+  },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  chip: {
     minHeight: 44,
     justifyContent: "center",
-  },
-  chipOn: { borderColor: colors.accent },
-  chipText: { color: colors.text, textTransform: "capitalize" },
-  nodeLabel: { color: colors.text, fontSize: 16, fontWeight: "600" },
-  sectionDivider: {
-    color: colors.muted,
-    fontSize: 11,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginTop: 8,
-  },
-  reviewCard: {
+    paddingHorizontal: space.md - 2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
     borderColor: colors.line,
-    padding: 12,
-    gap: 8,
   },
-  historyCard: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    gap: 4,
+  chipText: { color: colors.accent, fontWeight: "600", fontSize: 15 },
+  footer: {
+    paddingHorizontal: space.lg - 4,
+    paddingTop: space.md - 4,
+    paddingBottom: space.md - 4,
+    backgroundColor: colors.panel,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
   },
-  masteryBarBg: {
-    height: 6,
-    backgroundColor: colors.line,
-    borderRadius: 3,
-    overflow: "hidden",
+  footerRow: { flexDirection: "row", gap: space.sm + 4, maxWidth: 720, width: "100%", alignSelf: "center" },
+  inputRow: { flexDirection: "row", gap: space.sm, alignItems: "center", maxWidth: 720, width: "100%", alignSelf: "center" },
+  input: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderColor: colors.lineStrong,
+    paddingHorizontal: space.md + 2,
+    fontSize: 16,
+    color: colors.text,
+    backgroundColor: colors.bg,
   },
-  masteryBarFill: {
-    height: 6,
+  send: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.pill,
     backgroundColor: colors.accent,
-    borderRadius: 3,
-  },
-  settingRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: 12,
-    gap: 12,
+    justifyContent: "center",
   },
-  settingInfo: { flex: 1, gap: 4 },
+  tabBar: {
+    flexDirection: "row",
+    backgroundColor: colors.panel,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    paddingTop: 6,
+    paddingBottom: Platform.OS === "ios" ? 0 : 8,
+  },
+  tab: { flex: 1, alignItems: "center", gap: 2, minHeight: 56, justifyContent: "center" },
+  tabPill: { paddingHorizontal: 18, paddingVertical: 4, borderRadius: radius.pill },
+  tabLabel: { fontSize: 12, fontWeight: "700", color: colors.muted },
+  errorWrap: { paddingHorizontal: space.lg - 4, maxWidth: 720 + 40, width: "100%", alignSelf: "center" },
+  error: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    backgroundColor: colors.dangerSoft,
+    borderRadius: radius.md,
+    paddingLeft: space.md - 4,
+    paddingVertical: 4,
+  },
+  errorBtn: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.sm },
+  settingRow: { flexDirection: "row", alignItems: "center", gap: space.md - 4, paddingVertical: space.md - 4 },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(30, 27, 75, 0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: space.lg,
+  },
+  overlayCard: {
+    backgroundColor: colors.panel,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.md - 4,
+    alignItems: "center",
+    width: "100%",
+    maxWidth: 340,
+    ...shadow,
+  },
 });

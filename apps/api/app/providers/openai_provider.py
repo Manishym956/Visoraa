@@ -11,15 +11,19 @@ import httpx
 from app.errors import AppError
 from app.models import Depth, Lesson
 from app.providers.base import LessonProvider
+from app.providers.gemini_provider import SYSTEM_PROMPT  # shared so both ask for the full schema
 
-SYSTEM_PROMPT = """You are Visual Learner's teaching engine.
-Return ONLY valid JSON matching the lesson schema.
-Rules: start from observable evidence; distinguish extraction from inference;
-intuition before heavy math; short steps; state uncertainty in confidence (0-1);
-never invent unread symbols; prefer visual structures; include 3-5 practice questions.
-Visual.kind must be one of: equation_breakdown, flowchart, graph, concept_map.
-contentType must be one of: equation, diagram, text, graph, mixed.
-Optional visual.annotations may use normalized x,y,w,h in 0..1.
+EXTRACT_PROMPT = """You read learning material from an image. Do NOT teach or explain.
+Return ONLY JSON with these keys:
+contentType: one of equation, diagram, text, graph, mixed.
+subjectGuess: short subject name.
+transcription: everything written, copied exactly (use LaTeX for math).
+elements: [{id, label, kind, detail?, x?, y?, w?, h?}] the distinct parts (terms, boxes, axes,
+  labels, arrows); x,y,w,h are the element's box as fractions 0..1 of the image.
+relationships: [{from, to, label?}] how elements connect, by element id.
+unreadable: [string] anything blurry, cut off or ambiguous.
+confidence: 0..1, how sure you are the transcription is exact.
+Never guess symbols you cannot read; list them in unreadable instead. Keep it compact.
 """
 
 
@@ -33,11 +37,13 @@ class OpenAILessonProvider(LessonProvider):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 60.0,
+        max_tokens: int | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self._model = model or "gpt-4o-mini"
         self._timeout = timeout
+        self._max_tokens = max_tokens
 
     def generate_lesson(
         self,
@@ -77,6 +83,31 @@ class OpenAILessonProvider(LessonProvider):
         parsed = _parse_json_object(content)
         return Lesson.model_validate(parsed)
 
+    def extract_features(self, *, image_bytes: bytes, filename: str | None) -> dict[str, Any]:
+        """Read the image into compact structured features (short output, fits Groq free tier)."""
+        mime = _guess_mime(filename, image_bytes)
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": self._model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": EXTRACT_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract the features of this image."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                },
+            ],
+        }
+        data = self._post("/chat/completions", payload)
+        try:
+            return _parse_json_object(data["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, ValueError) as exc:
+            raise AppError("PROVIDER_ERROR", "Image extraction returned invalid JSON.", 502) from exc
+
     def answer_question(self, lesson: Lesson, question: str) -> tuple[str, list[str], float]:
         payload = {
             "model": self._model,
@@ -108,6 +139,8 @@ class OpenAILessonProvider(LessonProvider):
         )
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._max_tokens:
+            payload = {**payload, "max_tokens": self._max_tokens}
         try:
             response = httpx.post(
                 f"{self._base_url}{path}",

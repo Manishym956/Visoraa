@@ -42,7 +42,7 @@ set VL_PROVIDER=mock
 # Gemini (preferred live — never commit the key)
 set VL_PROVIDER=gemini
 set GEMINI_API_KEY=your-key
-# optional: set GEMINI_MODEL=gemini-2.0-flash
+# optional: set GEMINI_MODEL=gemini-3.5-flash
 
 # OpenAI-compatible alternative
 set VL_PROVIDER=openai

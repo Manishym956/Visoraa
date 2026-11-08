@@ -5,11 +5,12 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "visuallearner",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "light",
     "plugins": [
       "expo-image-picker",
       "expo-asset",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-font"
     ],
     "ios": {
       "supportsTablet": true

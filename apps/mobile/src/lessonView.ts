@@ -56,6 +56,7 @@ export interface Lesson {
   questions: PracticeQuestion[];
   confidence: number;
   evidence: string[];
+  sourceExtraction?: Record<string, unknown> | null;
 }
 
 export interface LessonResponse {

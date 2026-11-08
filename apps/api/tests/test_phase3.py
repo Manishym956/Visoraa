@@ -19,6 +19,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VL_PROVIDER", "mock")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     app = create_app(tmp_path / "p3_test.db")
     return TestClient(app)
 
@@ -49,6 +51,8 @@ def test_review_appears_after_attempt(client: TestClient, tmp_path, monkeypatch)
     """After an attempt, a concept is due on its scheduled date."""
     monkeypatch.setenv("VL_PROVIDER", "mock")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     app = create_app(tmp_path / "review_test.db")
     tc = TestClient(app)
 

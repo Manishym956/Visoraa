@@ -9,9 +9,11 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~4.0.1",
+    "@expo/vector-icons": "~14.0.4",
     "expo": "~52.0.46",
     "expo-asset": "~11.0.5",
     "expo-file-system": "~18.0.12",
+    "expo-font": "~13.0.4",
     "expo-image-picker": "~16.0.6",
     "expo-sqlite": "~15.1.4",
     "expo-status-bar": "~2.0.1",

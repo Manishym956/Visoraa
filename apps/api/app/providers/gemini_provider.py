@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -18,12 +19,18 @@ intuition before heavy math; short steps; state uncertainty in confidence (0-1);
 never invent unread symbols; prefer visual structures; include 3-5 practice questions.
 Visual.kind must be one of: equation_breakdown, flowchart, graph, concept_map.
 contentType must be one of: equation, diagram, text, graph, mixed.
-Optional visual.annotations may use normalized x,y,w,h in 0..1.
+Each visual.annotations item needs id and label, plus optional x,y,w,h in 0..1.
 Required keys: title, contentType, summary, intuition, steps, technicalDetails,
 workedExample {prompt, solution}, visual {kind, title, nodes, edges?, annotations?},
 commonMistakes, questions, confidence, evidence.
 Each question needs: id, conceptName, kind, prompt, choices, correctIndex, hint, explanation, difficulty.
+question.kind must be one of: conceptual, application, calculation, misconception.
+question.difficulty must be one of: easy, medium, hard. correctIndex is 0-based.
+Each visual node needs: id, label, detail?. Each edge needs: from, to, label?.
+steps, technicalDetails, commonMistakes and evidence are arrays of strings.
 """
+
+RETRY_DELAY_S = 2.0
 
 
 class GeminiLessonProvider(LessonProvider):
@@ -38,7 +45,7 @@ class GeminiLessonProvider(LessonProvider):
         timeout: float = 90.0,
     ) -> None:
         self._api_key = api_key
-        self._model = model or "gemini-2.0-flash"
+        self._model = model or "gemini-3.5-flash"
         self._base_url = (
             base_url or "https://generativelanguage.googleapis.com/v1beta"
         ).rstrip("/")
@@ -59,20 +66,34 @@ class GeminiLessonProvider(LessonProvider):
             f"preferredDepth={depth.value}. subject={subject or 'unspecified'}. "
             f"filename={filename or 'upload'}."
         )
+        return self._lesson_from_parts(
+            [{"text": user_text}, {"inlineData": {"mimeType": mime, "data": b64}}]
+        )
+
+    def generate_lesson_from_extraction(
+        self, *, extraction: dict[str, Any], depth: Depth, subject: str | None
+    ) -> Lesson:
+        """Teach step of the pipeline: Gemini never sees the image, only the extracted features."""
+        user_text = (
+            "Create a structured lesson from these features, extracted from the learner's image. "
+            "You cannot see the image: use ONLY these features and never add symbols that are not "
+            "in the transcription. Build visual.nodes from the elements, add one "
+            "visual.annotations item per element ({id, label, x, y, w, h}), list what was read in evidence, and keep "
+            "confidence at or below the extraction confidence. "
+            f"preferredDepth={depth.value}. subject={subject or extraction.get('subjectGuess') or 'unspecified'}.\n"
+            f"FEATURES:\n{json.dumps(extraction, ensure_ascii=False)}"
+        )
+        return self._lesson_from_parts([{"text": user_text}])
+
+    def _lesson_from_parts(self, parts: list[dict[str, Any]]) -> Lesson:
         payload = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": user_text},
-                        {"inlineData": {"mimeType": mime, "data": b64}},
-                    ],
-                }
-            ],
+            "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "temperature": 0.2,
                 "responseMimeType": "application/json",
+                # default thinking took 90s+ per lesson on gemini-3.x; low answers in seconds
+                "thinkingConfig": {"thinkingLevel": "low"},
             },
         }
         data = self._generate(payload)
@@ -110,6 +131,8 @@ class GeminiLessonProvider(LessonProvider):
             "generationConfig": {
                 "temperature": 0.2,
                 "responseMimeType": "application/json",
+                # default thinking took 90s+ per lesson on gemini-3.x; low answers in seconds
+                "thinkingConfig": {"thinkingLevel": "low"},
             },
         }
         data = self._generate(payload)
@@ -122,16 +145,21 @@ class GeminiLessonProvider(LessonProvider):
 
     def _generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}/models/{self._model}:generateContent"
-        try:
-            response = httpx.post(
-                url,
-                params={"key": self._api_key},
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise AppError("PROVIDER_ERROR", f"Gemini request failed: {exc}", 502) from exc
+        for attempt in range(2):
+            try:
+                response = httpx.post(
+                    url,
+                    params={"key": self._api_key},
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=self._timeout,
+                )
+            except httpx.HTTPError as exc:
+                raise AppError("PROVIDER_ERROR", f"Gemini request failed: {exc}", 502) from exc
+            # Gemini flash often returns transient 503 "overloaded"; one short retry usually clears it.
+            if response.status_code not in (429, 503) or attempt == 1:
+                break
+            time.sleep(RETRY_DELAY_S)
         if response.status_code >= 400:
             detail = response.text[:300]
             raise AppError(

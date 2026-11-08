@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 import type { VisualSpec } from "./lessonView";
-import { colors } from "./theme";
+import { colors, radius, shadow } from "./theme";
 
 export function VisualSpecView({ visual }: { visual: VisualSpec }) {
   return (
@@ -133,28 +133,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.panel,
-    padding: 16,
+    borderRadius: radius.lg,
+    padding: 20,
     gap: 12,
+    ...shadow,
   },
-  kicker: { color: colors.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 },
-  title: { color: colors.text, fontSize: 18, fontWeight: "600" },
+  kicker: { color: colors.accent, fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
+  title: { color: colors.text, fontSize: 18, fontWeight: "700" },
   caption: { color: colors.muted, fontSize: 14, lineHeight: 20 },
   node: { paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.line },
   nodeLabel: { color: colors.text, fontSize: 16, fontWeight: "600" },
-  nodeDetail: { color: colors.muted, marginTop: 4, fontSize: 13 },
-  edge: { color: colors.muted, fontSize: 13 },
+  nodeDetail: { color: colors.muted, marginTop: 4, fontSize: 14, lineHeight: 20 },
+  edge: { color: colors.muted, fontSize: 14 },
   strip: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 },
   stripItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   arrow: { color: colors.accent, fontSize: 18, fontWeight: "700" },
   term: {
+    borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.accentSoft,
     paddingVertical: 10,
     paddingHorizontal: 12,
     minWidth: 72,
   },
   flowBox: {
-    borderWidth: 1,
+    borderRadius: radius.sm,
+    borderWidth: 1.5,
     borderColor: colors.accent,
     paddingVertical: 12,
     paddingHorizontal: 14,
@@ -162,6 +167,7 @@ const styles = StyleSheet.create({
   },
   termLabel: { color: colors.text, fontSize: 16, fontWeight: "700" },
   graphWrap: {
+    borderRadius: radius.sm,
     height: 160,
     borderWidth: 1,
     borderColor: colors.line,
@@ -198,12 +204,14 @@ const styles = StyleSheet.create({
   graphLabel: { color: colors.text, fontSize: 13, marginLeft: 32 },
   cardGrid: { gap: 8 },
   card: {
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 12,
   },
   annoBlock: { gap: 8 },
   overlay: {
+    borderRadius: radius.sm,
     height: 120,
     borderWidth: 1,
     borderColor: colors.line,
@@ -212,17 +220,19 @@ const styles = StyleSheet.create({
   },
   annoBox: {
     position: "absolute",
+    minWidth: 96,
     borderWidth: 1,
     borderColor: colors.accent,
     padding: 4,
-    backgroundColor: "rgba(201, 242, 122, 0.12)",
+    backgroundColor: colors.accentSoft,
   },
   annoChip: {
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 6,
     margin: 4,
     alignSelf: "flex-start",
   },
-  annoText: { color: colors.accent, fontSize: 11, fontWeight: "600" },
+  annoText: { color: colors.accent, fontSize: 12, fontWeight: "700" },
 });

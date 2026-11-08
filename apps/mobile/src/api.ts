@@ -8,7 +8,7 @@ import type {
   TutorResponse,
 } from "./lessonView";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 /** Set to "mock" to force the mock provider on every request (offline demos / Settings screen). */
 let _providerOverride: string | null = null;
